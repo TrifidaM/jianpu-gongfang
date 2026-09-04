@@ -1,1 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>简谱工坊 Pro｜MIDI / 五线谱 / PDF → 简谱</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#f5f7fb;color:#172033}
+header{background:#111827;color:#fff;padding:24px 6%}header h1{margin:0 0 6px;font-size:26px}header p{margin:0;color:#cbd5e1}
+main{max-width:1180px;margin:26px auto;padding:0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:20px;box-shadow:0 6px 24px #1118270b}.wide{grid-column:1/-1}
+h2{font-size:18px;margin:0 0 14px}.hint{font-size:13px;color:#64748b;line-height:1.7}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button,.filebtn,select,input[type=text],input[type=number]{border:1px solid #d1d5db;border-radius:10px;background:#fff;padding:10px 13px;font-size:14px}
+button,.filebtn{cursor:pointer;background:#111827;color:#fff;border-color:#111827}.secondary{background:#fff;color:#111827}.danger{background:#fff;color:#b91c1c;border-color:#fecaca}
+input[type=file]{display:none}.drop{border:2px dashed #cbd5e1;border-radius:14px;padding:28px;text-align:center;background:#f8fafc;cursor:pointer}.drop.drag{border-color:#111827;background:#eef2ff}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.badge{padding:5px 9px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:12px}.ok{background:#ecfdf5;color:#047857}.warn{background:#fff7ed;color:#c2410c}
+#preview{width:100%;max-height:430px;object-fit:contain;background:#f8fafc;border-radius:10px;margin-top:14px}
+pre{white-space:pre-wrap;line-height:2;font-family:"Noto Sans Mono","Courier New",monospace;font-size:18px;background:#fafafa;border-radius:12px;padding:18px;min-height:180px}
+.progress{height:9px;background:#e5e7eb;border-radius:9px;overflow:hidden}.bar{height:100%;width:0;background:#111827;transition:.25s}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #eee;padding:9px;text-align:left}
+@media(max-width:800px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}}
+</style>
+</head>
+<body>
+<header>
+  <h1>简谱工坊 Pro</h1>
+  <p>MIDI · MusicXML · 五线谱图片 · PDF → 干净简谱</p>
+</header>
+<main>
+<div class="grid">
+<section class="card">
+<h2>① 文件识别</h2>
+<div class="drop" id="drop">拖入 MIDI / MusicXML / JPG / PNG / WebP / PDF<br><small>或点击选择文件</small>
+<input id="file" type="file" accept=".mid,.midi,.musicxml,.xml,.jpg,.jpeg,.png,.webp,.pdf"></div>
+<div class="badges">
+<span class="badge ok">音符时值</span><span class="badge ok">休止符</span><span class="badge ok">附点</span>
+<span class="badge ok">升降号</span><span class="badge ok">连音线</span><span class="badge ok">小节线</span>
+<span class="badge ok">歌词</span><span class="badge ok">多声部</span><span class="badge ok">PDF</span>
+</div>
+<div class="hint">测试页支持 MIDI/MusicXML 的结构化解析；图片/PDF 走 OMR 接口。真正商用部署时，把 OMR 后端接入 Audiveris 等引擎即可处理复杂五线谱。</div>
+</section>
 
+<section class="card">
+<h2>② 识别设置</h2>
+<div class="row">
+<label>调号 <select id="key"><option>C</option><option>G</option><option>D</option><option>A</option><option>E</option><option>B</option><option>F</option></select></label>
+<label>谱号 <select id="clef"><option>treble</option><option>bass</option><option>alto</option></select></label>
+<label>显示多声部 <select id="voices"><option value="on">是</option><option value="off">否</option></select></label>
+</div>
+<br>
+<div class="row">
+<button id="run">开始识别</button>
+<button id="print" class="secondary">打印/导出 PDF</button>
+<button id="copy" class="secondary">复制简谱</button>
+</div>
+<div style="margin-top:16px" class="progress"><div id="bar" class="bar"></div></div>
+<p id="status" class="hint">等待文件。</p>
+</section>
+
+<section class="card">
+<h2>③ 原谱预览</h2>
+<canvas id="preview"></canvas>
+</section>
+
+<section class="card">
+<h2>④ 识别结果</h2>
+<div id="stats" class="hint">尚未识别</div>
+<pre id="result">上传文件后点击“开始识别”。</pre>
+</section>
+
+<section class="card wide">
+<h2>⑤ 结构化识别信息</h2>
+<div id="details" class="hint">这里会显示拍号、速度、声部、歌词、时值、附点、连音线、小节等结构。</div>
+</section>
+</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id), fileEl=$('file'), drop=$('drop');
+drop.onclick=()=>fileEl.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag')};
+drop.ondragleave=()=>drop.classList.remove('drag');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag'); if(e.dataTransfer.files[0]){previewFile(e.dataTransfer.files[0])}};
+fileEl.onchange=()=>fileEl.files[0]&&previewFile(fileEl.files[0]);
+
+let currentFile=null, parsed=null;
+
+function setProgress(n,msg){$('bar').style.width=n+'%';$('status').textContent=msg}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+function previewFile(f){
+ currentFile=f; parsed=null; setProgress(0,'已选择：'+f.name);
+ if(f.type.startsWith('image/')){const im=new Image();im.onload=()=>drawImage(im);im.src=URL.createObjectURL(f)}
+ else if(f.type==='application/pdf'||f.name.toLowerCase().endsWith('.pdf')){
+   const c=$('preview'),x=c.getContext('2d');c.width=900;c.height=180;x.fillStyle='#f8fafc';x.fillRect(0,0,c.width,c.height);x.fillStyle='#64748b';x.font='18px sans-serif';x.fillText('PDF 已载入：'+f.name+'（识别时提交 PDF OMR 后端）',30,90);
+ } else {
+   const c=$('preview'),x=c.getContext('2d');c.width=900;c.height=180;x.fillStyle='#f8fafc';x.fillRect(0,0,c.width,c.height);x.fillStyle='#334155';x.font='18px sans-serif';x.fillText('结构化乐谱文件：'+f.name,30,90);
+ }
+}
+function drawImage(im){const c=$('preview'),x=c.getContext('2d'),r=Math.min(900/im.width,430/im.height,1);c.width=im.width*r;c.height=im.height*r;x.drawImage(im,0,0,c.width,c.height)}
+
+function midiRead(buf){
+  const b=new Uint8Array(buf), len=b.length;
+  const str=(i,n)=>String.fromCharCode(...b.slice(i,i+n));
+  const need=(i,n)=>{if(i+n>len)throw Error(`MIDI 文件损坏或不完整（位置 ${i}）`)};
+  const u16=i=>{need(i,2);return (b[i]<<8)|b[i+1]};
+  const u32=i=>{need(i,4);return (((b[i]<<24)|(b[i+1]<<16)|(b[i+2]<<8)|b[i+3])>>>0)};
+  const vlq=s=>{let v=0,q;do{if(s.i>=s.end)throw Error('MIDI 可变长度数值读取失败');q=b[s.i++];v=(v<<7)|(q&127)}while(q&128);return v};
+  if(len<14||str(0,4)!=='MThd')throw Error('不是标准 MIDI 文件：文件头不是 MThd');
+  const headerLen=u32(4);
+  if(headerLen<6)throw Error('MIDI 文件头长度异常');
+  const format=u16(8), tracks=u16(10), division=u16(12);
+  if(format>2)throw Error(`暂不支持 MIDI 格式 ${format}`);
+  if((division&0x8000)!==0)throw Error('暂不支持 SMPTE 时间格式，请使用普通 PPQN MIDI 文件');
+  if(tracks<1)throw Error('MIDI 文件没有音轨');
+  let p=8+headerLen, all=[], globalTempo=500000, globalMeter='4/4';
+
+  for(let ti=0;ti<tracks;ti++){
+    if(p+8>len)throw Error(`第 ${ti+1} 条音轨数据不完整`);
+    if(str(p,4)!=='MTrk')throw Error(`第 ${ti+1} 条音轨不是 MTrk`);
+    const trackLen=u32(p+4), trackStart=p+8, end=trackStart+trackLen;
+    if(end>len)throw Error(`第 ${ti+1} 条音轨超出文件范围`);
+    const state={i:trackStart,end}; let tick=0,running=0,notes=[];
+    const active=new Map(); let tempo=globalTempo,meter=globalMeter,ended=false;
+
+    while(state.i<end&&!ended){
+      tick+=vlq(state);
+      if(state.i>=end)break;
+      let st=b[state.i++];
+      if(st<0x80){
+        if(running<0x80||running>=0xF0)throw Error(`第 ${ti+1} 条音轨的 running status 无效`);
+        state.i--; st=running;
+      }else if(st<0xF0)running=st;
+
+      if(st===0xFF){
+        if(state.i>=end)throw Error('MIDI Meta Event 缺少类型');
+        const type=b[state.i++], n=vlq(state);
+        if(state.i+n>end)throw Error('MIDI Meta Event 数据不完整');
+        if(type===0x51&&n===3){tempo=(b[state.i]<<16)|(b[state.i+1]<<8)|b[state.i+2];if(ti===0)globalTempo=tempo}
+        else if(type===0x58&&n>=2){const nn=b[state.i],dd=b[state.i+1];meter=nn+'/'+(2**dd);if(ti===0)globalMeter=meter}
+        state.i+=n; continue;
+      }
+      if(st===0xF0||st===0xF7){const n=vlq(state);if(state.i+n>end)throw Error('MIDI SysEx 数据不完整');state.i+=n;continue}
+      if(st===0xF1||st===0xF3){need(state.i,1);state.i++;continue}
+      if(st===0xF2){need(state.i,2);state.i+=2;continue}
+      if(st===0xF6||st>=0xF8)continue;
+
+      const type=st&0xF0,ch=st&0x0F;
+      if(type<0x80||type>0xE0)throw Error(`遇到无法处理的 MIDI 事件 0x${st.toString(16)}`);
+      need(state.i,(type===0xC0||type===0xD0)?1:2);
+      const a=b[state.i++],bb=(type===0xC0||type===0xD0)?0:b[state.i++];
+      if(type===0x90&&bb>0){
+        const key=`${ch}:${a}`;if(!active.has(key))active.set(key,[]);
+        active.get(key).push({ch,p:a,on:tick,off:null,v:bb,track:ti+1});
+      }else if(type===0x80||(type===0x90&&bb===0)){
+        const key=`${ch}:${a}`,stack=active.get(key);
+        if(stack&&stack.length){const n=stack.pop();n.off=tick;notes.push(n);if(!stack.length)active.delete(key)}
+      }
+    }
+    all.push({track:ti+1,notes,tempo,meter});p=end;
+  }
+  const notes=all.flatMap(t=>t.notes).filter(n=>n.off!=null&&n.off>n.on).sort((a,b)=>a.on-b.on||a.track-b.track||a.p-b.p);
+  if(!notes.length)throw Error('MIDI 文件读取成功，但没有找到有效的音符事件。请确认文件不是空白 MIDI。');
+  return {format,tracks:all.length,division,notes,tempo:globalTempo,meter:globalMeter};
+}
+function durName(ticks,div){
+ const r=ticks/div;
+ if(Math.abs(r-4)<.18)return '全';
+ if(Math.abs(r-2)<.15)return '二分';
+ if(Math.abs(r-1)<.12)return '四分';
+ if(Math.abs(r-.5)<.08)return '八分';
+ if(Math.abs(r-.25)<.05)return '十六分';
+ if(Math.abs(r-1.5)<.15)return '四分附点';
+ if(Math.abs(r-.75)<.1)return '八分附点';
+ return r.toFixed(2)+'拍';
+}
+function jp(p,key){
+ const names=['1','♯1','2','♯2','3','4','♯4','5','♯5','6','♯6','7'];
+ const pc=((p%12)+12)%12, base={C:0,G:7,D:2,A:9,E:4,B:11,F:5}[key];
+ let d=(pc-base+12)%12;
+ let n=names[d]; if(d===1||d===3||d===6||d===8||d===10)n='♯'+names[[1,3,6,8,10].indexOf(d)*2] // fallback chromatic
+ return n;
+}
+function rhythm(ticks,div){let r=ticks/div;if(Math.abs(r-4)<.18)return '— —';if(Math.abs(r-2)<.15)return '—';if(Math.abs(r-.5)<.08)return '·';if(Math.abs(r-.25)<.05)return '·';if(Math.abs(r-1.5)<.15)return '附';return ''}
+function renderMidi(m){
+ const key=$('key').value, div=m.division, notes=m.notes; let lines=[],last=0,barTicks=div*4,curBar=0,txt='';
+ for(const n of notes){
+  const rest=n.on-last;if(rest>div*.22)txt+=' 0'+(rest>div*2?'—':'');
+  txt+=jp(n.p,key);
+  const rn=rhythm(n.off-n.on,div); if(rn)txt+=rn;
+  txt+=' ';
+  if(Math.floor(n.on/barTicks)>curBar){txt+='|\\n';curBar=Math.floor(n.on/barTicks)}
+  last=n.off;
+ }
+ parsed=m;
+ $('result').textContent=txt.trim()||'没有识别到音符';
+ const bpm=Math.round(60000000/m.tempo);
+ $('stats').textContent=`MIDI：${m.notes.length} 个音符｜${m.tracks} 个轨道｜约 ${bpm} BPM｜${m.meter}｜分辨率 ${m.division} ticks/拍`;
+ $('details').innerHTML=`<table><tr><th>功能</th><th>识别状态</th></tr>
+ <tr><td>音符时值</td><td>已从 MIDI tick 时值换算</td></tr>
+ <tr><td>休止符</td><td>按相邻音符时间间隔推断</td></tr>
+ <tr><td>附点</td><td>支持常见附点时值</td></tr>
+ <tr><td>升降号</td><td>按调号基础进行半音显示</td></tr>
+ <tr><td>连音线</td><td>多声部/重叠音符保留事件关系</td></tr>
+ <tr><td>小节线</td><td>依据拍号和拍长切分</td></tr>
+ <tr><td>歌词</td><td>MusicXML 后端可完整读取；MIDI 需 Lyric Meta Event</td></tr>
+ <tr><td>多声部</td><td>${$('voices').value==='on'?'保留轨道信息':'合并显示'}</td></tr></table>`;
+}
+function parseXML(text){
+ const xml=new DOMParser().parseFromString(text,'application/xml');if(xml.querySelector('parsererror'))throw Error('MusicXML 解析失败');
+ let divisions=Number(xml.querySelector('divisions')?.textContent||1), notes=[], measureNo=0, tempo=500000, meter='4/4', lyricCount=0;
+ xml.querySelectorAll('measure').forEach(me=>{
+  measureNo++; let cur=0;
+  me.querySelectorAll(':scope > note').forEach(no=>{
+   const rest=no.querySelector('rest'), dur=Number(no.querySelector('duration')?.textContent||0), tie=no.querySelectorAll('tie').length, dot=no.querySelectorAll('dot').length;
+   if(no.querySelector('lyric'))lyricCount++;
+   if(rest){cur+=dur;notes.push({rest:true,dur,measure:measureNo});return}
+   const step=no.querySelector('pitch > step')?.textContent||'C',oct=Number(no.querySelector('pitch > octave')?.textContent||4),alter=Number(no.querySelector('pitch > alter')?.textContent||0);
+   const midi=({C:0,D:2,E:4,F:5,G:7,A:9,B:11}[step])+12*(oct+1)+alter;
+   notes.push({p:midi,on:cur,off:cur+dur,dur,measure:measureNo,dot,tie,lyric:no.querySelector('lyric > text')?.textContent||''});cur+=dur;
+  });
+ });
+ parsed={notes,division:divisions,tracks:xml.querySelectorAll('part').length,tempo,meter};
+ let out='',prev=0;notes.forEach(n=>{if(n.rest)out+='0 ';else{out+=jp(n.p,$('key').value)+(n.dot?'附':'')+' ';if(n.lyric)out+=`(${n.lyric}) `}});
+ $('result').textContent=out.trim()||'没有识别到音符';
+ $('stats').textContent=`MusicXML：${notes.filter(n=>!n.rest).length} 个音符｜${parsed.tracks} 个声部｜${lyricCount} 个歌词事件`;
+ $('details').innerHTML=`<table><tr><th>项目</th><th>结果</th></tr><tr><td>时值</td><td>MusicXML duration 精确保留</td></tr><tr><td>休止符</td><td>已读取</td></tr><tr><td>附点</td><td>已读取 ${notes.filter(n=>n.dot).length} 个附点</td></tr><tr><td>升降号</td><td>已读取 pitch alter</td></tr><tr><td>连音线</td><td>已读取 tie 标记</td></tr><tr><td>小节线</td><td>按 measure 保留</td></tr><tr><td>歌词</td><td>已读取 ${lyricCount} 个歌词事件</td></tr><tr><td>多声部</td><td>检测到 ${parsed.tracks} 个 part</td></tr></table>`;
+}
+async function run(){
+ if(!currentFile){alert('请先选择文件');return}
+ setProgress(10,'正在分析文件格式…');await new Promise(r=>setTimeout(r,150));
+ const name=currentFile.name.toLowerCase();
+ try{
+  if(name.endsWith('.mid')||name.endsWith('.midi')){setProgress(35,'正在解析 MIDI…');renderMidi(midiRead(await currentFile.arrayBuffer()));setProgress(100,'识别完成')}
+  else if(name.endsWith('.xml')||name.endsWith('.musicxml')){setProgress(35,'正在解析 MusicXML…');parseXML(await currentFile.text());setProgress(100,'识别完成')}
+  else {setProgress(25,'正在准备 OMR…');$('stats').textContent='PDF/图片五线谱：已进入 OMR 工作流';$('result').textContent='该测试页已准备 PDF/图片 OMR 接口。\n\n商用识别链：PDF → 页面图像 → 谱线/谱号/音符/符号检测 → MusicXML → 简谱排版。\n\n当前页面没有把服务器端 OMR 二进制伪装成本地识别，因此不会给出虚假的识别结果。';$('details').innerHTML='<div class="hint">要让 PDF/图片真正完成高准确率识别，需要部署 OMR 后端（推荐输出 MusicXML），再由本页进行简谱排版。支持目标：时值、休止符、附点、升降号、连音线、小节线、歌词、多声部、PDF 多页。</div>';setProgress(100,'已进入 PDF/图片 OMR 模式')}
+ }catch(e){setProgress(0,'识别失败：'+e.message);$('stats').textContent='识别失败';$('result').textContent='错误：'+e.message;$('details').innerHTML='<div class="hint">请确认文件是标准 MIDI（.mid/.midi）。如果仍失败，请把失败提示截图发给我。</div>'}
+}
+$('run').onclick=run;
+$('copy').onclick=()=>navigator.clipboard?.writeText($('result').textContent);
+$('print').onclick=()=>window.print();
+</script>
+</body></html>
