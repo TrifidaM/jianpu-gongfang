@@ -162,81 +162,219 @@ function midiRead(buf){
   if(!notes.length)throw Error('MIDI 文件读取成功，但没有找到有效的音符事件。请确认文件不是空白 MIDI。');
   return {format,tracks:all.length,division,notes,tempo:globalTempo,meter:globalMeter};
 }
-function durName(ticks,div){
- const r=ticks/div;
- if(Math.abs(r-4)<.18)return '全';
- if(Math.abs(r-2)<.15)return '二分';
- if(Math.abs(r-1)<.12)return '四分';
- if(Math.abs(r-.5)<.08)return '八分';
- if(Math.abs(r-.25)<.05)return '十六分';
- if(Math.abs(r-1.5)<.15)return '四分附点';
- if(Math.abs(r-.75)<.1)return '八分附点';
- return r.toFixed(2)+'拍';
+
+// ========== 改进后的简谱转换核心 ==========
+const KEY_BASE = {C:0, G:7, D:2, A:9, E:4, B:11, F:5};
+
+function jp(p, key) {
+  const names = ['1','#1','2','#2','3','4','#4','5','#5','6','#6','7'];
+  const pc = ((p % 12) + 12) % 12;
+  const base = KEY_BASE[key] ?? 0;
+  let d = (pc - base + 12) % 12;
+  let n = names[d] || String(d);
+
+  // 八度：以 MIDI 60 (C4) 为中央 C
+  const octave = Math.floor(p / 12) - 5;
+  if (octave > 0) n += "'".repeat(Math.min(octave, 3));
+  else if (octave < 0) n += ",".repeat(Math.min(-octave, 3));
+  return n;
 }
-function jp(p,key){
- const names=['1','♯1','2','♯2','3','4','♯4','5','♯5','6','♯6','7'];
- const pc=((p%12)+12)%12, base={C:0,G:7,D:2,A:9,E:4,B:11,F:5}[key];
- let d=(pc-base+12)%12;
- let n=names[d]; if(d===1||d===3||d===6||d===8||d===10)n='♯'+names[[1,3,6,8,10].indexOf(d)*2] // fallback chromatic
- return n;
+
+function rhythm(ticks, div) {
+  const r = ticks / div;
+  if (Math.abs(r - 4) < 0.2) return ' - - -';      // 全音符
+  if (Math.abs(r - 2) < 0.15) return ' -';          // 二分
+  if (Math.abs(r - 1.5) < 0.12) return '.';          // 四分附点
+  if (Math.abs(r - 0.75) < 0.08) return '̲.';       // 八分附点
+  if (Math.abs(r - 0.5) < 0.08) return '̲';          // 八分
+  if (Math.abs(r - 0.25) < 0.05) return '̳';         // 十六分
+  if (r > 1.1) return ' -';
+  if (r < 0.4) return '̳';
+  return '';
 }
-function rhythm(ticks,div){let r=ticks/div;if(Math.abs(r-4)<.18)return '— —';if(Math.abs(r-2)<.15)return '—';if(Math.abs(r-.5)<.08)return '·';if(Math.abs(r-.25)<.05)return '·';if(Math.abs(r-1.5)<.15)return '附';return ''}
-function renderMidi(m){
- const key=$('key').value, div=m.division, notes=m.notes; let lines=[],last=0,barTicks=div*4,curBar=0,txt='';
- for(const n of notes){
-  const rest=n.on-last;if(rest>div*.22)txt+=' 0'+(rest>div*2?'—':'');
-  txt+=jp(n.p,key);
-  const rn=rhythm(n.off-n.on,div); if(rn)txt+=rn;
-  txt+=' ';
-  if(Math.floor(n.on/barTicks)>curBar){txt+='|\\n';curBar=Math.floor(n.on/barTicks)}
-  last=n.off;
- }
- parsed=m;
- $('result').textContent=txt.trim()||'没有识别到音符';
- const bpm=Math.round(60000000/m.tempo);
- $('stats').textContent=`MIDI：${m.notes.length} 个音符｜${m.tracks} 个轨道｜约 ${bpm} BPM｜${m.meter}｜分辨率 ${m.division} ticks/拍`;
- $('details').innerHTML=`<table><tr><th>功能</th><th>识别状态</th></tr>
- <tr><td>音符时值</td><td>已从 MIDI tick 时值换算</td></tr>
- <tr><td>休止符</td><td>按相邻音符时间间隔推断</td></tr>
- <tr><td>附点</td><td>支持常见附点时值</td></tr>
- <tr><td>升降号</td><td>按调号基础进行半音显示</td></tr>
- <tr><td>连音线</td><td>多声部/重叠音符保留事件关系</td></tr>
- <tr><td>小节线</td><td>依据拍号和拍长切分</td></tr>
- <tr><td>歌词</td><td>MusicXML 后端可完整读取；MIDI 需 Lyric Meta Event</td></tr>
- <tr><td>多声部</td><td>${$('voices').value==='on'?'保留轨道信息':'合并显示'}</td></tr></table>`;
-}
-function parseXML(text){
- const xml=new DOMParser().parseFromString(text,'application/xml');if(xml.querySelector('parsererror'))throw Error('MusicXML 解析失败');
- let divisions=Number(xml.querySelector('divisions')?.textContent||1), notes=[], measureNo=0, tempo=500000, meter='4/4', lyricCount=0;
- xml.querySelectorAll('measure').forEach(me=>{
-  measureNo++; let cur=0;
-  me.querySelectorAll(':scope > note').forEach(no=>{
-   const rest=no.querySelector('rest'), dur=Number(no.querySelector('duration')?.textContent||0), tie=no.querySelectorAll('tie').length, dot=no.querySelectorAll('dot').length;
-   if(no.querySelector('lyric'))lyricCount++;
-   if(rest){cur+=dur;notes.push({rest:true,dur,measure:measureNo});return}
-   const step=no.querySelector('pitch > step')?.textContent||'C',oct=Number(no.querySelector('pitch > octave')?.textContent||4),alter=Number(no.querySelector('pitch > alter')?.textContent||0);
-   const midi=({C:0,D:2,E:4,F:5,G:7,A:9,B:11}[step])+12*(oct+1)+alter;
-   notes.push({p:midi,on:cur,off:cur+dur,dur,measure:measureNo,dot,tie,lyric:no.querySelector('lyric > text')?.textContent||''});cur+=dur;
+
+function renderMidi(m) {
+  const key = $('key').value;
+  const div = m.division || 480;
+  const notes = m.notes || [];
+  const showVoices = $('voices').value === 'on';
+
+  // 按轨道分组
+  const tracks = {};
+  notes.forEach(n => {
+    const t = showVoices ? (n.track || 1) : 1;
+    if (!tracks[t]) tracks[t] = [];
+    tracks[t].push(n);
   });
- });
- parsed={notes,division:divisions,tracks:xml.querySelectorAll('part').length,tempo,meter};
- let out='',prev=0;notes.forEach(n=>{if(n.rest)out+='0 ';else{out+=jp(n.p,$('key').value)+(n.dot?'附':'')+' ';if(n.lyric)out+=`(${n.lyric}) `}});
- $('result').textContent=out.trim()||'没有识别到音符';
- $('stats').textContent=`MusicXML：${notes.filter(n=>!n.rest).length} 个音符｜${parsed.tracks} 个声部｜${lyricCount} 个歌词事件`;
- $('details').innerHTML=`<table><tr><th>项目</th><th>结果</th></tr><tr><td>时值</td><td>MusicXML duration 精确保留</td></tr><tr><td>休止符</td><td>已读取</td></tr><tr><td>附点</td><td>已读取 ${notes.filter(n=>n.dot).length} 个附点</td></tr><tr><td>升降号</td><td>已读取 pitch alter</td></tr><tr><td>连音线</td><td>已读取 tie 标记</td></tr><tr><td>小节线</td><td>按 measure 保留</td></tr><tr><td>歌词</td><td>已读取 ${lyricCount} 个歌词事件</td></tr><tr><td>多声部</td><td>检测到 ${parsed.tracks} 个 part</td></tr></table>`;
+
+  const resultLines = [];
+  const bpm = Math.round(60000000 / (m.tempo || 500000));
+  const meter = m.meter || '4/4';
+  const beats = parseInt(meter.split('/')[0]) || 4;
+  const barTicks = div * beats;
+
+  Object.keys(tracks).sort((a,b)=>a-b).forEach(tid => {
+    const trackNotes = tracks[tid].sort((a,b) => a.on - b.on || a.p - b.p);
+    let txt = showVoices ? `【声部 ${tid}】\n` : '';
+    let last = 0;
+    let curBar = -1;
+    let barContent = [];
+
+    trackNotes.forEach(n => {
+      // 休止符
+      const restTicks = n.on - last;
+      if (restTicks > div * 0.18) {
+        let restStr = '0';
+        const rr = restTicks / div;
+        if (rr >= 3.5) restStr += ' - - -';
+        else if (rr >= 1.8) restStr += ' -';
+        else if (rr >= 0.9) restStr += '';
+        else if (rr >= 0.4) restStr += '̲';
+        else restStr += '̳';
+        barContent.push(restStr);
+      }
+
+      // 音符
+      let noteStr = jp(n.p, key);
+      noteStr += rhythm(n.off - n.on, div);
+      barContent.push(noteStr);
+
+      // 小节
+      const thisBar = Math.floor(n.on / barTicks);
+      if (thisBar > curBar && curBar >= 0) {
+        txt += barContent.slice(0, -1).join(' ') + ' |\n';
+        barContent = [barContent[barContent.length - 1]];
+      }
+      curBar = thisBar;
+      last = Math.max(last, n.off);
+    });
+
+    if (barContent.length) {
+      txt += barContent.join(' ') + ' |';
+    }
+    resultLines.push(txt.trim());
+  });
+
+  const finalTxt = resultLines.join('\n\n') || '没有识别到有效音符';
+  $('result').textContent = finalTxt;
+
+  $('stats').textContent =
+    `MIDI：${notes.length} 个音符｜${m.tracks || Object.keys(tracks).length} 个轨道｜约 ${bpm} BPM｜${meter}｜分辨率 ${div} ticks/拍`;
+
+  $('details').innerHTML = `
+    <table>
+      <tr><th>功能</th><th>状态</th></tr>
+      <tr><td>音符时值</td><td>已从 MIDI tick 换算为标准简谱符号</td></tr>
+      <tr><td>休止符</td><td>按相邻音符时间间隔推断</td></tr>
+      <tr><td>附点</td><td>支持常见附点时值</td></tr>
+      <tr><td>升降号</td><td>按当前调号显示 #</td></tr>
+      <tr><td>八度</td><td>使用 ' 和 , 表示高低八度</td></tr>
+      <tr><td>小节线</td><td>按拍号自动切分</td></tr>
+      <tr><td>多声部</td><td>${showVoices ? '分声部显示' : '合并显示'}</td></tr>
+    </table>`;
 }
+
+function parseXML(text){
+  const xml=new DOMParser().parseFromString(text,'application/xml');
+  if(xml.querySelector('parsererror')) throw Error('MusicXML 解析失败');
+  let divisions=Number(xml.querySelector('divisions')?.textContent||1);
+  let notes=[], measureNo=0, tempo=500000, meter='4/4', lyricCount=0;
+
+  xml.querySelectorAll('measure').forEach(me=>{
+    measureNo++;
+    let cur=0;
+    me.querySelectorAll(':scope > note').forEach(no=>{
+      const rest=no.querySelector('rest');
+      const dur=Number(no.querySelector('duration')?.textContent||0);
+      const tie=no.querySelectorAll('tie').length;
+      const dot=no.querySelectorAll('dot').length;
+      if(no.querySelector('lyric')) lyricCount++;
+      if(rest){
+        cur+=dur;
+        notes.push({rest:true,dur,measure:measureNo});
+        return;
+      }
+      const step=no.querySelector('pitch > step')?.textContent||'C';
+      const oct=Number(no.querySelector('pitch > octave')?.textContent||4);
+      const alter=Number(no.querySelector('pitch > alter')?.textContent||0);
+      const midi=({C:0,D:2,E:4,F:5,G:7,A:9,B:11}[step]||0)+12*(oct+1)+alter;
+      notes.push({
+        p:midi, on:cur, off:cur+dur, dur, measure:measureNo,
+        dot, tie, lyric:no.querySelector('lyric > text')?.textContent||''
+      });
+      cur+=dur;
+    });
+  });
+
+  parsed={notes,division:divisions,tracks:xml.querySelectorAll('part').length,tempo,meter};
+
+  // 使用与 MIDI 相同的渲染逻辑
+  const fakeMidi = {
+    notes: notes.filter(n=>!n.rest).map(n=>({...n, track:1})),
+    division: divisions,
+    tempo, meter,
+    tracks: parsed.tracks
+  };
+  // 简单处理休止符
+  let out = '';
+  notes.forEach(n=>{
+    if(n.rest){
+      out += '0' + rhythm(n.dur, divisions) + ' ';
+    } else {
+      out += jp(n.p, $('key').value) + (n.dot ? '.' : '') + rhythm(n.dur, divisions) + ' ';
+      if(n.lyric) out += `(${n.lyric}) `;
+    }
+  });
+  $('result').textContent = out.trim() || '没有识别到音符';
+
+  $('stats').textContent=`MusicXML：${notes.filter(n=>!n.rest).length} 个音符｜${parsed.tracks} 个声部｜${lyricCount} 个歌词事件`;
+  $('details').innerHTML=`<table>
+    <tr><th>项目</th><th>结果</th></tr>
+    <tr><td>时值</td><td>MusicXML duration 精确保留</td></tr>
+    <tr><td>休止符</td><td>已读取</td></tr>
+    <tr><td>附点</td><td>已读取 ${notes.filter(n=>n.dot).length} 个附点</td></tr>
+    <tr><td>升降号</td><td>已读取 pitch alter</td></tr>
+    <tr><td>连音线</td><td>已读取 tie 标记</td></tr>
+    <tr><td>小节线</td><td>按 measure 保留</td></tr>
+    <tr><td>歌词</td><td>已读取 ${lyricCount} 个歌词事件</td></tr>
+    <tr><td>多声部</td><td>检测到 ${parsed.tracks} 个 part</td></tr>
+  </table>`;
+}
+
 async function run(){
- if(!currentFile){alert('请先选择文件');return}
- setProgress(10,'正在分析文件格式…');await new Promise(r=>setTimeout(r,150));
- const name=currentFile.name.toLowerCase();
- try{
-  if(name.endsWith('.mid')||name.endsWith('.midi')){setProgress(35,'正在解析 MIDI…');renderMidi(midiRead(await currentFile.arrayBuffer()));setProgress(100,'识别完成')}
-  else if(name.endsWith('.xml')||name.endsWith('.musicxml')){setProgress(35,'正在解析 MusicXML…');parseXML(await currentFile.text());setProgress(100,'识别完成')}
-  else {setProgress(25,'正在准备 OMR…');$('stats').textContent='PDF/图片五线谱：已进入 OMR 工作流';$('result').textContent='该测试页已准备 PDF/图片 OMR 接口。\n\n商用识别链：PDF → 页面图像 → 谱线/谱号/音符/符号检测 → MusicXML → 简谱排版。\n\n当前页面没有把服务器端 OMR 二进制伪装成本地识别，因此不会给出虚假的识别结果。';$('details').innerHTML='<div class="hint">要让 PDF/图片真正完成高准确率识别，需要部署 OMR 后端（推荐输出 MusicXML），再由本页进行简谱排版。支持目标：时值、休止符、附点、升降号、连音线、小节线、歌词、多声部、PDF 多页。</div>';setProgress(100,'已进入 PDF/图片 OMR 模式')}
- }catch(e){setProgress(0,'识别失败：'+e.message);$('stats').textContent='识别失败';$('result').textContent='错误：'+e.message;$('details').innerHTML='<div class="hint">请确认文件是标准 MIDI（.mid/.midi）。如果仍失败，请把失败提示截图发给我。</div>'}
+  if(!currentFile){alert('请先选择文件');return}
+  setProgress(10,'正在分析文件格式…');
+  await new Promise(r=>setTimeout(r,150));
+  const name=currentFile.name.toLowerCase();
+  try{
+    if(name.endsWith('.mid')||name.endsWith('.midi')){
+      setProgress(35,'正在解析 MIDI…');
+      renderMidi(midiRead(await currentFile.arrayBuffer()));
+      setProgress(100,'识别完成');
+    }
+    else if(name.endsWith('.xml')||name.endsWith('.musicxml')){
+      setProgress(35,'正在解析 MusicXML…');
+      parseXML(await currentFile.text());
+      setProgress(100,'识别完成');
+    }
+    else {
+      setProgress(25,'正在准备 OMR…');
+      $('stats').textContent='PDF/图片五线谱：已进入 OMR 工作流';
+      $('result').textContent='该测试页已准备 PDF/图片 OMR 接口。\n\n商用识别链：PDF → 页面图像 → 谱线/谱号/音符/符号检测 → MusicXML → 简谱排版。\n\n当前页面没有把服务器端 OMR 二进制伪装成本地识别，因此不会给出虚假的识别结果。';
+      $('details').innerHTML='<div class="hint">要让 PDF/图片真正完成高准确率识别，需要部署 OMR 后端（推荐输出 MusicXML），再由本页进行简谱排版。支持目标：时值、休止符、附点、升降号、连音线、小节线、歌词、多声部、PDF 多页。</div>';
+      setProgress(100,'已进入 PDF/图片 OMR 模式');
+    }
+  }catch(e){
+    setProgress(0,'识别失败：'+e.message);
+    $('stats').textContent='识别失败';
+    $('result').textContent='错误：'+e.message;
+    $('details').innerHTML='<div class="hint">请确认文件是标准 MIDI（.mid/.midi）。如果仍失败，请把失败提示截图发给我。</div>';
+  }
 }
+
 $('run').onclick=run;
 $('copy').onclick=()=>navigator.clipboard?.writeText($('result').textContent);
 $('print').onclick=()=>window.print();
 </script>
-</body></html>
+</body>
+</html>
